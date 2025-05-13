@@ -24,6 +24,7 @@ struct CheckResult {
   bool do_idle = false;
   bool do_homing = false;
   bool new_debug = false;
+  bool new_fault_velocity = false;
   CheckResultFlag flag = CheckResultFlag::kNothing;
 };
 
@@ -37,6 +38,7 @@ class CommandInterpreter {
   PDGains3x3 cartesian_gain_command_;
   PDGains gain_command_;
   float max_current_;
+  float fault_velocity_;
 
   bool print_debug_info_;
 
@@ -74,6 +76,7 @@ class CommandInterpreter {
   BLA::Matrix<3, 3> LatestCartesianKd3x3();
   ActuatorCurrentVector LatestFeedForwardForce();
   float LatestMaxCurrent();
+  float LatestFaultVelocity();
 };
 
 // Start character: 0x00
@@ -175,6 +178,11 @@ CheckResult CommandInterpreter::CheckForMessages() {
       result.new_max_current = true;
       result.flag = CheckResultFlag::kNewCommand;
     }
+    if (obj.containsKey("fault_velocity")) {
+      fault_velocity_ = obj["fault_velocity"].as<float>();
+      result.new_fault_velocity = true;
+      result.flag = CheckResultFlag::kNewCommand;
+    }
     if (obj.containsKey("activations")) {
       auto json_array = obj["activations"].as<JsonArray>();
       result.flag = CopyJsonArray(json_array, activations_);
@@ -238,5 +246,7 @@ ActuatorCurrentVector CommandInterpreter::LatestFeedForwardForce() {
 }
 
 float CommandInterpreter::LatestMaxCurrent() { return max_current_; }
+
+float CommandInterpreter::LatestFaultVelocity() { return fault_velocity_; }
 
 void CommandInterpreter::Flush() { reader_.FlushStream(); }

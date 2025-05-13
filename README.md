@@ -1,7 +1,7 @@
 # Stanford TC-Pupper
 
 ## Installation
-* Clone this repository ``git clone https://github.com/Nate711/DJIPupperTests.git``
+* Clone this repository ``git clone https://github.com/montrealrobotics/DJIPupperTests.git``
 * Go into the repo directory ``cd DJIPupperTests``
 * Run ```git submodule update --init``` to install required libraries
 * Install PlatformIO IDE (addon for VSCode)

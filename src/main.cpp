@@ -16,7 +16,7 @@ constexpr int IMU_FILTER_FREQUENCY = 1000000 / IMU_DELAY; // Hz
 const float MAX_TORQUE = 2.0;
 PDGains DEFAULT_GAINS = {8.0, 2.0};
 
-const bool ECHO_COMMANDS = false;
+const bool ECHO_COMMANDS = true;
 ////////////////////// END CONFIG ///////////////////////
 
 DriveSystem drive;
@@ -111,7 +111,8 @@ void loop() {
       drive.SetCartesianPositions(interpreter.LatestCartesianPositionCommand());
       if (ECHO_COMMANDS) {
         Serial << "Cartesian position command: "
-               << interpreter.LatestCartesianPositionCommand();
+               << interpreter.LatestCartesianPositionCommand()
+               << endl;
       }
     }
     if (r.new_kp) {
@@ -153,6 +154,12 @@ void loop() {
       drive.SetMaxCurrent(interpreter.LatestMaxCurrent());
       if (ECHO_COMMANDS) {
         Serial << "Max Current: " << interpreter.LatestMaxCurrent() << endl;
+      }
+    }
+    if (r.new_fault_velocity) {
+      drive.SetFaultVelocity(interpreter.LatestFaultVelocity());
+      if (ECHO_COMMANDS) {
+        Serial << "Fault Velocity: " << interpreter.LatestFaultVelocity() << endl;
       }
     }
     if (r.new_activation) {
@@ -198,7 +205,7 @@ void loop() {
     if (micros() - last_print_ts >= options.print_delay_micros) {
       // drive.PrintStatus(options);
       // logger.AddData(drive.DebugData());
-      drive.PrintMsgPackStatus(options);
+      // drive.PrintMsgPackStatus(options);
       last_print_ts = micros();
     }
     if (print_header_periodically) {

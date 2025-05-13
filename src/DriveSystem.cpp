@@ -7,17 +7,16 @@
 
 DriveSystem::DriveSystem() : front_bus_(), rear_bus_() {
   control_mode_ = DriveControlMode::kIdle;
-  fault_current_ = 10.0;  // TODO: don't make this so high at default
-  fault_position_ = 2 * PI;  // TODO: make this a param
-  fault_velocity_ =
-      100000.0;  // TODO: make this a param, set to something more reasonable.
+  fault_current_ = 10.0;
+  fault_position_ = PI;
+  fault_velocity_ = 7.0;
   max_current_ = 0.0;
   position_reference_.fill(0.0);
   velocity_reference_.fill(0.0);
-  current_reference_.fill(
-      0.0);  // TODO: log the commanded current even when in position PID mode
+  current_reference_.fill(0.0);
   active_mask_.fill(false);
   zero_position_.fill(0.0);
+  start_position_.fill(0.0);
 
   cartesian_position_gains_.kp.Fill(0.0);
   cartesian_position_gains_.kd.Fill(0.0);
@@ -25,29 +24,32 @@ DriveSystem::DriveSystem() : front_bus_(), rear_bus_() {
   std::array<float, 12> direction_multipliers = {-1, -1, 1, -1, 1, -1,
                                                  -1, -1, 1, -1, 1, -1};
   direction_multipliers_ = direction_multipliers;
+  current_limit_ = 2.0;
 
-  /*  Homing parameters begin */
-  // float abduction_homed_position = 0.8384160301;
-  // float hip_homed_position = 3.4564099081;
-  // float knee_homed_position = 2.9234265;
   float backlash = 2.0 / 80.0;
-  float abduction_homed_position = 45 * PI / 180 + backlash;
-  float hip_homed_position = (270 - 15) * PI / 180 + backlash;
-  float knee_homed_position = 165 * PI / 180 + backlash;
+  float abduction_zero_position = 0 + backlash;
+  float hip_zero_position = (90 - 30) * PI / 180 + backlash;
+  float knee_zero_position = (180 - 30) * PI / 180 + backlash;
+
+  float abduction_init_position = 45 * PI / 180 + backlash;
+  float hip_init_position = 90 * PI / 180 + backlash;
+  float knee_init_position = (180 - 15) * PI / 180 + backlash;
+
   std::array<float, 12> homing_directions = {-1, 1, -1, 1, 1, -1,
                                              -1, 1, -1, 1, 1, -1};
   homing_directions_ = homing_directions;
-  ActuatorPositionVector homed_positions = {abduction_homed_position, hip_homed_position, knee_homed_position, abduction_homed_position, hip_homed_position, knee_homed_position,
-                                           abduction_homed_position, hip_homed_position, knee_homed_position, abduction_homed_position, hip_homed_position, knee_homed_position};
-  homed_positions_ = homed_positions;
-  std::array<bool, 12> homed_axes = {false, false, false, false, false, false, 
-                                    false, false, false, false, false, false};
+  ActuatorPositionVector zero_positions_cmd = {abduction_zero_position, hip_zero_position, knee_zero_position, abduction_zero_position, hip_zero_position, knee_zero_position,
+                                                abduction_zero_position, hip_zero_position, knee_zero_position, abduction_zero_position, hip_zero_position, knee_zero_position};
+  zero_positions_cmd_ = zero_positions_cmd;
+  ActuatorPositionVector initial_positions = {abduction_init_position, hip_init_position, knee_init_position, abduction_init_position, hip_init_position, knee_init_position,
+                                              abduction_init_position, hip_init_position, knee_init_position, abduction_init_position, hip_init_position, knee_init_position};
+  initial_positions_ = initial_positions;
+  std::array<bool, 12> homed_axes = {false, false, false, false, false, false,
+                                     false, false, false, false, false, false};
   homed_axes_ = homed_axes;
-  std::array<bool, 12> homing_axes = {false, false, false, false, false, false, 
-                                    false, false, false, false, false, false};
-  homing_axes_ = homing_axes;
-  homing_current_threshold = 5.0;
-  homing_velocity = 0.0015;
+  just_homed_ = false;
+
+  homing_velocity = 0.0005;
   std::array<int, 4> knee_axes = {2, 5, 8, 11};
   knee_axes_ = knee_axes;
   std::array<int, 4> hip_axes = {1, 4, 7, 10};
@@ -93,30 +95,23 @@ void DriveSystem::SetupIMU(int filter_frequency) { imu.Setup(filter_frequency); 
 void DriveSystem::UpdateIMU() { imu.Update(); }
 
 void DriveSystem::ExecuteHomingSequence() {
-  float homing_current = 6.0;
   control_mode_ = DriveControlMode::kHoming;
   for (size_t i = 0; i < kNumActuators; i++) {
     homed_axes_[i] = false;
-    homing_axes_[i] = false;
   }
   SetActivations({1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1});
-  SetMaxCurrent(homing_current);
+  SetMaxCurrent(current_limit_);
 }
 
-template<size_t N>
+template <size_t N>
 bool DriveSystem::CheckHomingStatus(std::array<int, N> axes) {
   // Check if any axes are not homed
   for (int i : axes) {
-    // If at least one axis is not homed, continue homing all axes
     if (!homed_axes_[i]) {
-      for (int j : axes) {
-        homing_axes_[j] = true;
-      }
       return false;
     }
   }
-  // If all axes are homed, update the corresponding entries in homing_axes_
-  for (int i : axes) { homing_axes_[i] = false; }
+
   return true;
 }
 
@@ -184,6 +179,10 @@ void DriveSystem::SetFaultCurrent(float fault_current) {
   fault_current_ = fault_current;
 }
 
+void DriveSystem::SetFaultVelocity(float fault_velocity) {
+  fault_velocity_ = fault_velocity;
+}
+
 void DriveSystem::SetMaxCurrent(float max_current) {
   max_current_ = max_current;
 }
@@ -244,54 +243,81 @@ void DriveSystem::Update() {
       break;
     }
     case DriveControlMode::kHoming: {
-      ActuatorCurrentVector pd_current;
+      start_position_ = GetRawActuatorPositions();
+      bool position_warning = false;
+
       for (size_t i = 0; i < kNumActuators; i++) {
-        if (homing_axes_[i] && !homed_axes_[i]) {
-          position_reference_[i] = position_reference_[i] + homing_directions_[i] * homing_velocity;
-        }
-
-        PD(pd_current[i], GetActuatorPosition(i), GetActuatorVelocity(i),
-           position_reference_[i], velocity_reference_[i], position_gains_);
-
-        if (homing_axes_[i] && !homed_axes_[i]) {
-          if (abs(pd_current[i]) >= homing_current_threshold) {
-            homed_axes_[i] = true;
-
-            // set axis zero
-            zero_position_[i] = GetRawActuatorPosition(i) - direction_multipliers_[i] * homing_directions_[i] * homed_positions_[i];
-
-            // set position setpoint
-            position_reference_[i] = homing_directions_[i] * homed_positions_[i];
-          }
+        if (abs(start_position_[i]) > 0.15) {
+          position_warning = true;
         }
       }
-      CommandCurrents(pd_current);
 
-      std::array<int, 4> abduction_axes_ = {0, 3, 6, 9};
-
-      // Homing sequence
-      // Phase 0: knee joints
-      if (CheckHomingStatus(knee_axes_)) {
-        // Phase 1: abduction joints
-        if (CheckHomingStatus(abduction_axes_)) {
-          for (int i : abduction_axes_) { position_reference_[i] = 0; }
-          // Phase 2: hip joints
-          if (CheckHomingStatus(hip_axes_)) {
-            // Finish homing sequence and hold the current pose
-            for (int i : hip_axes_) { position_reference_[i] = homing_directions_[i] * PI / 2; }
-            control_mode_ = DriveControlMode::kPositionControl;
-          }
-        }
+      if (position_warning) {
+        Serial << "WARNING: Initial position is not zero" << endl;
+        control_mode_ = DriveControlMode::kError;
+        break;
       }
-      break;
+
+      for (size_t i = 0; i < kNumActuators; i++) {
+        zero_position_[i] = start_position_[i] -
+                            (zero_positions_cmd_[i] *
+                             direction_multipliers_[i] * homing_directions_[i]);
+        homed_axes_[i] = true;
+      }
+      ActuatorPositionVector non_constrained_positions;
+
+      for (size_t i = 0; i < kNumActuators; i++) {
+        non_constrained_positions[i] =
+            initial_positions_[i] * homing_directions_[i];
+      }
+
+      position_reference_ =
+          Utils::Constrain(non_constrained_positions, float(-PI), float(PI));
+      Serial << "Homing complete" << endl;
+      // Switch to position control mode
+      just_homed_ = true;
+      control_mode_ = DriveControlMode::kPositionControl;
     }
     case DriveControlMode::kPositionControl: {
-      ActuatorCurrentVector pd_current;
-      for (size_t i = 0; i < kNumActuators; i++) {
-        PD(pd_current[i], GetActuatorPosition(i), GetActuatorVelocity(i),
-           position_reference_[i], velocity_reference_[i], position_gains_);
+      if (just_homed_) {
+        static unsigned long transition_start_time = millis();
+        static ActuatorPositionVector start_positions = GetActuatorPositions();
+        static ActuatorPositionVector target_positions = position_reference_;
+
+        const unsigned long transition_duration = 5000;
+        float progress =
+            (float)(millis() - transition_start_time) / transition_duration;
+        progress = (progress < 0.0f)   ? 0.0f
+                   : (progress > 1.0f) ? 1.0f
+                                       : progress;
+        float smooth_progress = 0.5f - 0.5f * cos(progress * PI);
+
+        ActuatorPositionVector interpolated_positions;
+        for (size_t i = 0; i < kNumActuators; i++) {
+          interpolated_positions[i] =
+              start_positions[i] +
+              (target_positions[i] - start_positions[i]) * smooth_progress;
+        }
+
+        ActuatorCurrentVector pd_current;
+        for (size_t i = 0; i < kNumActuators; i++) {
+          PD(pd_current[i], GetActuatorPosition(i), GetActuatorVelocity(i),
+             interpolated_positions[i], velocity_reference_[i],
+             position_gains_);
+        }
+        CommandCurrents(pd_current);
+
+        if (progress >= 1.0f) {
+          just_homed_ = false;
+        }
+      } else {
+        ActuatorCurrentVector pd_current;
+        for (size_t i = 0; i < kNumActuators; i++) {
+          PD(pd_current[i], GetActuatorPosition(i), GetActuatorVelocity(i),
+             position_reference_[i], velocity_reference_[i], position_gains_);
+        }
+        CommandCurrents(pd_current);
       }
-      CommandCurrents(pd_current);
       break;
     }
     case DriveControlMode::kCartesianPositionControl: {
@@ -320,7 +346,7 @@ void DriveSystem::CommandCurrents(ActuatorCurrentVector currents) {
       Utils::Constrain(currents, -max_current_, max_current_);
   if (Utils::Maximum(current_command) > fault_current_ ||
       Utils::Minimum(current_command) < -fault_current_) {
-    Serial << "Requested current too large. Erroring out." << endl;
+    Serial << "Requested current too large. Erroring out. Current request: " << current_command << endl;
     control_mode_ = DriveControlMode::kError;
     return;
   }
@@ -331,29 +357,22 @@ void DriveSystem::CommandCurrents(ActuatorCurrentVector currents) {
   last_commanded_current_ = current_command;
 
   // Convert the currents into the motors' local frames
-  current_command =
-      Utils::ElemMultiply(current_command, direction_multipliers_);
+  current_command = Utils::ElemMultiply(current_command, direction_multipliers_);
 
   // Convert from float array to int32 array in units milli amps.
-  std::array<int32_t, kNumActuators> currents_mA =
-      Utils::ConvertToFixedPoint(current_command, 1000);
+  std::array<int32_t, kNumActuators> currents_mA = Utils::ConvertToFixedPoint(current_command, 1000);
 
   // Send current commands down the CAN buses
-  front_bus_.CommandTorques(currents_mA[0], currents_mA[1], currents_mA[2],
-                            currents_mA[3], C610Subbus::kIDZeroToThree);
-  front_bus_.CommandTorques(currents_mA[4], currents_mA[5], 0, 0,
-                            C610Subbus::kIDFourToSeven);
-  rear_bus_.CommandTorques(currents_mA[6], currents_mA[7], currents_mA[8],
-                           currents_mA[9], C610Subbus::kIDZeroToThree);
-  rear_bus_.CommandTorques(currents_mA[10], currents_mA[11], 0, 0,
-                           C610Subbus::kIDFourToSeven);
+  front_bus_.CommandTorques(currents_mA[0], currents_mA[1], currents_mA[2], currents_mA[3], C610Subbus::kIDZeroToThree);
+  front_bus_.CommandTorques(currents_mA[4], currents_mA[5], 0, 0, C610Subbus::kIDFourToSeven);
+  rear_bus_.CommandTorques(currents_mA[6], currents_mA[7], currents_mA[8], currents_mA[9], C610Subbus::kIDZeroToThree);
+  rear_bus_.CommandTorques(currents_mA[10], currents_mA[11], 0, 0, C610Subbus::kIDFourToSeven);
 }
 
 C610 DriveSystem::GetController(uint8_t i) {
-  // TODO put these constants somewhere else
-  if (i >= 0 && i <= 5) {
+  if (i >= 0 && i <= (kNumActuatorsPerBus - 1)) {
     return front_bus_.Get(i);
-  } else if (i >= 6 && i <= 11) {
+  } else if (i >= kNumActuatorsPerBus && i <= (kNumActuators - 1)) {
     return rear_bus_.Get(i - 6);
   } else {
     Serial << "Invalid actuator index. Must be 0<=i<=11." << endl;
@@ -524,7 +543,7 @@ void DriveSystem::PrintStatus(DrivePrintOptions options) {
   Serial << imu.yaw_rate << delimiter;
   Serial << imu.pitch_rate << delimiter;
   Serial << imu.roll_rate << delimiter;
-  
+
   for (uint8_t i = 0; i < kNumActuators; i++) {
     if (!active_mask_[i]) continue;
     if (options.positions) {

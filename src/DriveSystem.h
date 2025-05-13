@@ -38,7 +38,8 @@ const uint8_t kNumDriveSystemDebugValues = 1 + 6 + 7*12;
 // Class for controlling the 12 (no more and no less) actuators on Pupper
 class DriveSystem {
  public:
-  static const size_t kNumActuators = 12;  // TODO something else with this
+  static const size_t kNumActuators = 12;
+  static constexpr uint8_t kNumActuatorsPerBus = kNumActuators / 2;
 
  private:
   C610Bus<CAN1> front_bus_;
@@ -49,6 +50,7 @@ class DriveSystem {
   DriveControlMode control_mode_;
 
   ActuatorPositionVector zero_position_;
+  ActuatorPositionVector start_position_;
   ActuatorPositionVector position_reference_;
   ActuatorVelocityVector velocity_reference_;
   ActuatorCurrentVector current_reference_;
@@ -87,7 +89,8 @@ class DriveSystem {
 
   /*  Homing parameters begin */
   // Homed positions of the axes (corresponding to joint limits)
-  ActuatorPositionVector homed_positions_;
+  ActuatorPositionVector zero_positions_cmd_;
+  ActuatorPositionVector initial_positions_;
 
   // Abduction joint limit in the direction of homing
   float abduction_homed_position;
@@ -107,14 +110,10 @@ class DriveSystem {
   // Which axes have been homed already
   std::array<bool, 12> homed_axes_;
 
-  // Which axes are currently homing
-  std::array<bool, 12> homing_axes_;
-
-  // Threshold for detecting collisions with the joint limits during homing
-  float homing_current_threshold = 3.0;
-
   // Angular velocity in radians/timestep for homing
   float homing_velocity = 0.0005;
+  float current_limit_;
+  bool just_homed_;
 
   // Axes grouped into different phases of the homing sequence
   std::array<int, 4> knee_axes_;
@@ -215,6 +214,9 @@ class DriveSystem {
 
   // Set current level that would trigger a fault.
   void SetFaultCurrent(float fault_current);
+
+  // Set velocity that would trigger a fault.
+  void SetFaultVelocity(float fault_velocity);
 
   // Set maximum PID and current control torque.
   void SetMaxCurrent(float max_current);
